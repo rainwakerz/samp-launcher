@@ -1,0 +1,292 @@
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
+
+// ---------- Window controls ----------
+$('#btn-min').onclick   = () => launcher.window.minimize();
+$('#btn-max').onclick   = () => launcher.window.maximize();
+$('#btn-close').onclick = () => launcher.window.close();
+launcher.window.onMaximizeChange((isMax) => {
+  $('#btn-max').textContent = isMax ? '❐' : '☐';
+});
+
+// ---------- Toast ----------
+const toastEl = $('#toast');
+let toastTimer;
+function toast(msg, type = '') {
+  toastEl.textContent = msg;
+  toastEl.className = `toast toast--show ${type ? 'toast--' + type : ''}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.className = 'toast', 2500);
+}
+const setStatus = (t) => ($('#statusText').textContent = t);
+
+// ---------- Состояние ----------
+let servers = [];
+let currentServer = null;
+let serverToDelete = null;
+let settingsOpen = false;
+
+// ---------- Утилиты ----------
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;',
+    '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+// ==========================================
+// ПЕРЕКЛЮЧЕНИЕ ВИДОВ: ГЛАВНАЯ ↔ НАСТРОЙКИ
+// ==========================================
+const viewMain     = $('#viewMain');
+const viewSettings = $('#viewSettings');
+const btnSettings  = $('#btn-openSettings');
+
+function showMain() {
+  settingsOpen = false;
+  viewMain.classList.remove('hidden');
+  viewSettings.classList.add('hidden');
+  btnSettings.classList.remove('sidebar__settings--active');
+}
+
+function showSettings() {
+  settingsOpen = true;
+  viewMain.classList.add('hidden');
+  viewSettings.classList.remove('hidden');
+  btnSettings.classList.add('sidebar__settings--active');
+  loadSettingsToForm();
+}
+
+// Toggle: одна кнопка открывает и закрывает настройки
+btnSettings.addEventListener('click', () => {
+  if (settingsOpen) {
+    showMain();
+  } else {
+    showSettings();
+  }
+});
+
+$('#btn-cancelSettings').addEventListener('click', showMain);
+$('#btn-saveSettings').addEventListener('click', async () => {
+  await saveSettings();
+  toast('Настройки сохранены', 'success');
+  showMain();
+});
+
+// ==========================================
+// СЕРВЕРЫ
+// ==========================================
+function renderServers() {
+  const list = $('#serverList');
+  list.innerHTML = '';
+
+  if (!servers.length) {
+    list.innerHTML = '<li class="server-empty">Нет серверов. Нажмите «+» чтобы добавить.</li>';
+    $('#heroTitle').textContent = 'НЕТ СЕРВЕРА';
+    $('#heroIp').textContent = '—';
+    currentServer = null;
+    return;
+  }
+
+  if (!currentServer || !servers.find(s => s.ip === currentServer.ip)) {
+    currentServer = servers[0];
+  }
+
+  servers.forEach((srv) => {
+    const li = document.createElement('li');
+    li.className = 'server' + (srv.ip === currentServer.ip ? ' server--active' : '');
+    li.dataset.ip = srv.ip;
+
+    const isFull = srv.online >= srv.slots;
+    const dotClass = isFull ? 'dot--full' : 'dot--online';
+
+    li.innerHTML = `
+      <div class="server__name">${escapeHtml(srv.name)}</div>
+      <div class="server__info">
+        <span class="dot ${dotClass}"></span>
+        ${srv.online}/${srv.slots}
+      </div>
+      <button class="server__delete" title="Удалить сервер">✕</button>
+    `;
+
+    li.addEventListener('click', (e) => {
+      if (e.target.closest('.server__delete')) return;
+      currentServer = srv;
+      updateHero();
+      $$('.server').forEach(el => el.classList.remove('server--active'));
+      li.classList.add('server--active');
+      saveServers();
+    });
+
+    li.querySelector('.server__delete').addEventListener('click', (e) => {
+      e.stopPropagation();
+      openDeleteModal(srv);
+    });
+
+    list.appendChild(li);
+  });
+
+  updateHero();
+}
+
+function updateHero() {
+  if (!currentServer) return;
+  $('#heroTitle').textContent = currentServer.name.toUpperCase();
+  $('#heroIp').textContent = currentServer.ip;
+}
+
+async function saveServers() {
+  await launcher.servers.save(servers);
+}
+
+async function loadServers() {
+  servers = await launcher.servers.load();
+  renderServers();
+}
+
+// ==========================================
+// МОДАЛКИ
+// ==========================================
+const modalAdd = $('#modalAdd');
+const modalDelete = $('#modalDelete');
+
+function openModal(modal) { modal.classList.add('modal--open'); }
+function closeModal(modal) { modal.classList.remove('modal--open'); }
+
+$$('[data-close]').forEach(el => {
+  el.addEventListener('click', () => {
+    closeModal(modalAdd);
+    closeModal(modalDelete);
+  });
+});
+
+$('#btn-addServer').addEventListener('click', () => {
+  $('#newName').value = '';
+  $('#newIp').value = '';
+  openModal(modalAdd);
+  setTimeout(() => $('#newName').focus(), 50);
+});
+
+$('#btn-createServer').addEventListener('click', async () => {
+  const name = $('#newName').value.trim();
+  const ip = $('#newIp').value.trim();
+
+  if (!name) return toast('Введите название', 'error');
+  if (!/^[\w.-]+:\d{1,5}$/.test(ip)) {
+    return toast('Формат IP: host:port', 'error');
+  }
+  if (servers.some(s => s.ip === ip)) {
+    return toast('Сервер с таким IP уже есть', 'error');
+  }
+
+  servers.push({ name, ip, online: 0, slots: 1000 });
+  await saveServers();
+  renderServers();
+  closeModal(modalAdd);
+  toast('Сервер добавлен', 'success');
+});
+
+$('#newName').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('#newIp').focus();
+});
+$('#newIp').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('#btn-createServer').click();
+});
+
+function openDeleteModal(srv) {
+  serverToDelete = srv;
+  $('#deleteServerName').textContent = srv.name;
+  openModal(modalDelete);
+}
+
+$('#btn-confirmDelete').addEventListener('click', async () => {
+  if (!serverToDelete) return;
+  servers = servers.filter(s => s.ip !== serverToDelete.ip);
+  if (currentServer && currentServer.ip === serverToDelete.ip) {
+    currentServer = servers[0] || null;
+  }
+  await saveServers();
+  renderServers();
+  closeModal(modalDelete);
+  toast('Сервер удалён', 'success');
+  serverToDelete = null;
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    closeModal(modalAdd);
+    closeModal(modalDelete);
+  }
+});
+
+// ==========================================
+// НАСТРОЙКИ
+// ==========================================
+async function loadSettingsToForm() {
+  const s = await launcher.settings.load();
+  if (s.nickname) $('#nickname').value = s.nickname;
+  if (s.sampPath) $('#sampPath').value = s.sampPath;
+}
+
+async function saveSettings() {
+  await launcher.settings.save({
+    nickname: $('#nickname').value.trim(),
+    sampPath: $('#sampPath').value.trim(),
+  });
+}
+
+$('#btn-browse').addEventListener('click', async () => {
+  const folder = await launcher.dialog.pickFolder();
+  if (folder) {
+    $('#sampPath').value = folder;
+    toast('Путь выбран', 'success');
+  }
+});
+
+// ==========================================
+// ЗАПУСК ИГРЫ
+// ==========================================
+$('#launchForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  if (!currentServer) return toast('Выберите сервер', 'error');
+
+  const nickname = $('#nickname').value.trim();
+  const sampPath = $('#sampPath').value.trim();
+
+  if (!nickname) return toast('Введите никнейм', 'error');
+  if (!sampPath) {
+    toast('Укажите путь в настройках', 'error');
+    return showSettings();
+  }
+
+  const btn = $('#btn-launch');
+  btn.disabled = true;
+  btn.textContent = '⏳ Запуск...';
+  setStatus('Запуск SA-MP...');
+
+  const res = await launcher.launch({
+    nickname,
+    serverIp: currentServer.ip,
+    sampPath,
+  });
+
+  if (res.success) {
+    toast('Игра запущена!', 'success');
+    setStatus('Игра запущена');
+    await saveSettings();
+  } else {
+    toast('Ошибка: ' + res.error, 'error');
+    setStatus('Ошибка запуска');
+  }
+  btn.disabled = false;
+  btn.textContent = '▶ ИГРАТЬ';
+});
+
+// ==========================================
+// СТАРТ
+// ==========================================
+(async () => {
+  showMain();
+  await loadSettingsToForm();
+  await loadServers();
+})();
